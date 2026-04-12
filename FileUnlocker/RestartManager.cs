@@ -27,7 +27,7 @@ namespace FileUnlocker
 		private struct RM_UNIQUE_PROCESS
 		{
 			public int ProcessId;
-			public FILETIME ProcessStartTime;
+			public System.Runtime.InteropServices.ComTypes.FILETIME ProcessStartTime;
 		}
 
 		[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]

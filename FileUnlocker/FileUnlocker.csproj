@@ -1,13 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
 
   <PropertyGroup>
-    <OutputType>WinExe</OutputType>
+    <OutputType>Exe</OutputType>
 
-    <!-- Target .NET 10 desktop -->
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <TargetFramework>net40</TargetFramework>
 
     <!-- Needed for WinForms UI -->
-    <UseWindowsForms>true</UseWindowsForms>
+    <UseWindowsForms>false</UseWindowsForms>
 
     <Company>NA</Company>
     <Authors>Marian Pekár</Authors>
@@ -16,11 +15,19 @@
     <Version>1.1.0</Version>
     <PackageProjectUrl>https://github.com/marianpekar/file-unlocker-for-windows/releases</PackageProjectUrl>
     <RepositoryUrl>https://github.com/marianpekar/file-unlocker-for-windows</RepositoryUrl>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <StartupObject></StartupObject>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
     <PlatformTarget>x64</PlatformTarget>
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <DefineConstants>TRACE</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <CheckForOverflowUnderflow>false</CheckForOverflowUnderflow>
+    <DefineConstants>TRACE</DefineConstants>
   </PropertyGroup>
 
   <Target Name="PostBuild" AfterTargets="PostBuildEvent">
@@ -30,6 +37,10 @@
   <ItemGroup>
     <None Remove="icon.png" />
     <None Remove="icon.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Management" />
   </ItemGroup>
 
 </Project>

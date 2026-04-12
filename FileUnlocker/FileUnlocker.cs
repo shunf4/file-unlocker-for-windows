@@ -2,39 +2,53 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Management;
 using System.Text;
 
 namespace FileUnlocker
 {
     public static class FileUnlocker
     {
-        public static void Unlock(string path, bool silent)
+        public static int Unlock(string path, bool silent, bool console)
         {
             if (string.IsNullOrWhiteSpace(path))
             {
                 if (!silent)
                 {
-                    Message.Show("No file or directory path was provided.", "Unlock");
+                    if (console)
+                    {
+                        Console.Error.WriteLine("No file or directory path was provided.", "Unlock");
+                    } else
+                    {
+                        Message.Show("No file or directory path was provided.", "Unlock");
+                    }
+                        
                 }
-                return;
+                return 3;
             }
 
             var processes = path.Exist() && path.IsDirectoryPath()
                 ? GetProcessesFromDirectoryPath(path)
                 : GetProcessesFromFilePath(path);
 
-            if (IsProcessArrayEmpty(processes, path, silent))
+            if (IsProcessArrayEmpty(processes, path, silent, console))
             {
-                return;
+                return 2;
             }
 
             if (silent)
             {
                 KillProcesses(processes);
+                return 0;
+            }
+            else if (console)
+            {
+                GenPrintProcessLockHint(path, processes);
+                return 0;
             }
             else
             {
-                ShowDialog(path, processes);
+                return ShowDialog(path, processes);
             }
         }
 
@@ -73,7 +87,24 @@ namespace FileUnlocker
             return new List<Process>(processesById.Values).ToArray();
         }
 
-        private static void ShowDialog(string path, Process[] processes)
+        private static int ShowDialog(string path, Process[] processes)
+        {
+            string hint = GenProcessLockHint(path, true, processes);
+
+            var ret = 0;
+            Message.ShowYesNoDialog(hint, "Unlock", (processes1) => { KillProcesses(processes1); ret = 0; }, (processes1) => { ret = 4; }, processes);
+
+            return ret;
+        }
+
+        private static void GenPrintProcessLockHint(string path, Process[] processes)
+        {
+            string hint = GenProcessLockHint(path, false, processes);
+
+            Console.Error.WriteLine(hint);
+        }
+
+        private static string GenProcessLockHint(string path, bool ask, Process[] processes)
         {
             var sb = new StringBuilder();
             sb.AppendLine($"{Path.GetFileName(path)} is locked by:");
@@ -83,9 +114,42 @@ namespace FileUnlocker
                 sb.AppendLine($"{process.ProcessName} ({process.Id})");
             }
 
-            sb.AppendLine($"Kill {(processes.Length > 1 ? "processes" : "process")}?");
+            if (ask)
+            {
+                sb.AppendLine($"Kill {(processes.Length > 1 ? "processes" : "process")}?");
+            } else
+            {
+                sb.Append("\n");
+            }
 
-            Message.ShowYesNoDialog(sb.ToString(), "Unlock", KillProcesses, null, processes);
+            var hint = sb.ToString();
+            return hint;
+        }
+
+        // https://stackoverflow.com/questions/5901679/kill-process-tree-programmatically-in-c-sharp
+        private static void KillProcessAndChildren(int pid)
+        {
+            // Cannot close 'system idle process'.
+            if (pid == 0)
+            {
+                return;
+            }
+            ManagementObjectSearcher searcher = new ManagementObjectSearcher
+                    ("Select * From Win32_Process Where ParentProcessID=" + pid);
+            ManagementObjectCollection moc = searcher.Get();
+            foreach (ManagementObject mo in moc)
+            {
+                KillProcessAndChildren(Convert.ToInt32(mo["ProcessID"]));
+            }
+            try
+            {
+                Process proc = Process.GetProcessById(pid);
+                proc.Kill();
+            }
+            catch (ArgumentException)
+            {
+                // Process already exited.
+            }
         }
 
         private static void KillProcesses(Process[] processes)
@@ -99,7 +163,9 @@ namespace FileUnlocker
                         continue;
                     }
 
-                    process.Kill(entireProcessTree: true);
+                    //process.Kill(entireProcessTree: true);
+
+                    KillProcessAndChildren(process.Id);
 
                     process.WaitForExit(2000);
                 }
@@ -113,13 +179,21 @@ namespace FileUnlocker
             }
         }
 
-        private static bool IsProcessArrayEmpty(Process[] processes, string path, bool silent)
+        private static bool IsProcessArrayEmpty(Process[] processes, string path, bool silent, bool console)
         {
             if (processes == null || processes.Length == 0)
             {
                 if (!silent)
                 {
-                    Message.Show($"{Path.GetFileName(path)} is not currently locked by any process.", "Unlock");
+                    var hint = $"{Path.GetFileName(path)} is not currently locked by any process.";
+                    if (console)
+                    {
+                        Console.Error.WriteLine(hint, "Unlock");
+                    }
+                    else
+                    {
+                        Message.Show(hint, "Unlock");
+                    }
                 }
 
                 return true;
