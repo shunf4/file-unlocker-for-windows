@@ -117,7 +117,7 @@ namespace FileUnlocker
 					}
 					else throw new Exception("Could not list processes locking resource.");
 				}
-				else if (resource != 0) throw new Exception("Could not list processes locking resource. Failed to get size of result.");
+				else if (resource != 0) throw new Exception("Could not list processes locking resource. Failed to get size of result. " + resource);
 			}
 			finally
 			{

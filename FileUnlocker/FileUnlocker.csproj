@@ -31,7 +31,7 @@
   </PropertyGroup>
 
   <Target Name="PostBuild" AfterTargets="PostBuildEvent">
-    <Exec Command="copy /y &quot;$(ProjectDir)install.bat&quot; &quot;$(TargetDir)install.bat&quot;&#xD;&#xA;copy /y &quot;$(ProjectDir)remove.bat&quot; &quot;$(TargetDir)remove.bat&quot;&#xD;&#xA;copy /y &quot;$(ProjectDir)key.ico&quot; &quot;$(TargetDir)key.ico&quot;&#xD;&#xA;" />
+    <Exec Command="copy /y &quot;$(ProjectDir)install_run_as_admin.bat&quot; &quot;$(TargetDir)install_run_as_admin.bat&quot;&#xD;&#xA;copy /y &quot;$(ProjectDir)remove_run_as_admin.bat&quot; &quot;$(TargetDir)remove_run_as_admin.bat&quot;&#xD;&#xA;copy /y &quot;$(ProjectDir)key.ico&quot; &quot;$(TargetDir)key.ico&quot;&#xD;&#xA;" />
   </Target>
 
   <ItemGroup>
