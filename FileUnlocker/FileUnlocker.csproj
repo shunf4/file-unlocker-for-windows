@@ -7,6 +7,7 @@
 
     <!-- Needed for WinForms UI -->
     <UseWindowsForms>false</UseWindowsForms>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
 
     <Company>NA</Company>
     <Authors>Marian Pekár</Authors>
@@ -17,21 +18,25 @@
     <RepositoryUrl>https://github.com/marianpekar/file-unlocker-for-windows</RepositoryUrl>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
     <StartupObject></StartupObject>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
     <PlatformTarget>x64</PlatformTarget>
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
     <DefineConstants>TRACE</DefineConstants>
+    <OutputPath>bin\Release\FileUnlocker-shunf4_mod</OutputPath>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
     <CheckForOverflowUnderflow>false</CheckForOverflowUnderflow>
     <DefineConstants>TRACE</DefineConstants>
+    <OutputPath>bin\Debug\FileUnlocker-shunf4_mod</OutputPath>
   </PropertyGroup>
 
   <Target Name="PostBuild" AfterTargets="PostBuildEvent">
-    <Exec Command="copy /y &quot;$(ProjectDir)install_run_as_admin.bat&quot; &quot;$(TargetDir)install_run_as_admin.bat&quot;&#xD;&#xA;copy /y &quot;$(ProjectDir)remove_run_as_admin.bat&quot; &quot;$(TargetDir)remove_run_as_admin.bat&quot;&#xD;&#xA;copy /y &quot;$(ProjectDir)key.ico&quot; &quot;$(TargetDir)key.ico&quot;&#xD;&#xA;" />
+    <Exec Command="copy /y &quot;$(ProjectDir)\..\README.md&quot; &quot;$(TargetDir)README.md&quot;&#xD;&#xA;copy /y &quot;$(ProjectDir)install_run_as_admin.bat&quot; &quot;$(TargetDir)install_run_as_admin.bat&quot;&#xD;&#xA;copy /y &quot;$(ProjectDir)remove_run_as_admin.bat&quot; &quot;$(TargetDir)remove_run_as_admin.bat&quot;&#xD;&#xA;copy /y &quot;$(ProjectDir)key.ico&quot; &quot;$(TargetDir)key.ico&quot;&#xD;&#xA;" />
   </Target>
 
   <ItemGroup>
@@ -41,6 +46,7 @@
 
   <ItemGroup>
     <Reference Include="System.Management" />
+    <Reference Include="System.Windows.Forms" />
   </ItemGroup>
 
 </Project>

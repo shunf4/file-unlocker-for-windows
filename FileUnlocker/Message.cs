@@ -11,6 +11,7 @@ namespace FileUnlocker
 
         public static void Show(string message, string title) 
         {
+            Console.Error.WriteLine("Please see the dialog box.");
             MessageBox((IntPtr)0, message, title, (uint)TYPE.MB_OK);
         }
 
@@ -27,6 +28,7 @@ namespace FileUnlocker
 
         public static void ShowYesNoDialog<T>(string message, string title, Action<T> OnYes, Action<T> OnNo, T obj)
         {
+            Console.Error.WriteLine("Please see the dialog box.");
             RESULT result = (RESULT)MessageBox((IntPtr)0, message, title, (uint)TYPE.MB_YESNO);
 
             switch (result)

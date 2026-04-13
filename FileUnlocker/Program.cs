@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
@@ -12,17 +13,62 @@ namespace FileUnlocker
         [STAThread]
         static int Main(string[] args)
         {
-            bool noAdmin = args.Length > 1 && args[1].EqualsAny(StringComparison.OrdinalIgnoreCase, "-noadmin", "-na") || args.Length > 2 && args[2].EqualsAny(StringComparison.OrdinalIgnoreCase, "-noadmin", "-na") || args.Length > 3 && args[3].EqualsAny(StringComparison.OrdinalIgnoreCase, "-noadmin", "-na");
+            System.Windows.Forms.Application.EnableVisualStyles();
+            System.Windows.Forms.Application.SetCompatibleTextRenderingDefault(false);
 
+            string helpText = "FileUnlocker.exe [-silent] [-console] [-noadmin] [-nohandlefullscan] [-norestartmanagerdetect] path1 [path2 [path3 [...]]]\n\nFileUnlocker.exe [-s] [-c] [-na] [-nh] [-nr] path1 [path2 [path3 [...]]]\n";
+
+            if (args.Length > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "/h" || args[0] == "-?" || args[0] == "/?"))
+            {
+                Console.Out.WriteLine(helpText);
+                return 0;
+            }
+            if (args.Length == 0)
+            {
+                Console.Error.WriteLine(helpText);
+                return 1;
+            }
+
+            List<string> paths = new List<string>();
+            bool noAdmin = false;
+            bool silent = false;
+            bool console = false;
+            bool noRestartManagerDetect = false;
+            bool noHandleFullScan = false;
+            foreach (string a in args)
+            {
+                if (a.EqualsAny(StringComparison.OrdinalIgnoreCase, "-noadmin", "-na"))
+                {
+                    noAdmin = true;
+                } else if (a.EqualsAny(StringComparison.OrdinalIgnoreCase, "-silent", "-s"))
+                {
+                    silent = true;
+                }
+                else if (a.EqualsAny(StringComparison.OrdinalIgnoreCase, "-console", "-c"))
+                {
+                    console = true;
+                }
+                else if (a.EqualsAny(StringComparison.OrdinalIgnoreCase, "-nohandlefullscan", "-nh"))
+                {
+                    noHandleFullScan = true;
+                }
+                else if (a.EqualsAny(StringComparison.OrdinalIgnoreCase, "-norestartmanagerdetect", "-nr"))
+                {
+                    noRestartManagerDetect = true;
+                }
+                else
+                {
+                    paths.Add(a);
+                }
+            }
+
+            
             if (!noAdmin)
             {
                 RelaunchIfNotAdmin(args);
             }
-            string path = args.Length > 0 ? args[0] : "";
-            bool silent = args.Length > 1 && args[1].EqualsAny(StringComparison.OrdinalIgnoreCase, "-silent", "-s") || args.Length > 2 && args[2].EqualsAny(StringComparison.OrdinalIgnoreCase, "-silent", "-s") || args.Length > 3 && args[3].EqualsAny(StringComparison.OrdinalIgnoreCase, "-silent", "-s");
-            bool console = args.Length > 1 && args[1].EqualsAny(StringComparison.OrdinalIgnoreCase, "-console", "-c") || args.Length > 2 && args[2].EqualsAny(StringComparison.OrdinalIgnoreCase, "-console", "-c") || args.Length > 3 && args[3].EqualsAny(StringComparison.OrdinalIgnoreCase, "-console", "-c");
-            
-            return FileUnlocker.Unlock(path, silent, console);
+           
+            return FileUnlocker.Unlock(paths, silent, console, noHandleFullScan, noRestartManagerDetect);
         }
 
         public static class CommandLineHelper

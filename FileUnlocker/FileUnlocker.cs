@@ -4,12 +4,9 @@ using System.Diagnostics;
 using System.IO;
 using System.Management;
 using System.Text;
-using System;
-using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using System.Diagnostics;
-using System.Text;
 using System.Threading;
+using System.Linq;
 
 namespace FileUnlocker
 {
@@ -82,10 +79,19 @@ namespace FileUnlocker
         }
         #endregion
 
-        public static void Scan(string filePath, Dictionary<int, Process> procDict)
+        public static void Scan(SortedSet<string> fullPaths, Dictionary<int, Process> procDict, bool silent)
         {
-            string devicePath = GetDevicePath(filePath);
-            Console.Error.WriteLine("EnhancedHandleScanner Searching for NT Path: {0}", devicePath);
+            List<string> devicePaths = new List<string>(fullPaths.Select(p => GetDevicePath(p)));
+            SortedSet<string> devicePathsLower = new SortedSet<string>(devicePaths.Select(p => p.ToLower()));
+            List<string> devicePathsLowerWithSlash = new List<string>(devicePathsLower.Select(p => p + "\\"));
+            if (!silent)
+            {
+                Console.Error.WriteLine("EnhancedHandleScanner Searching for NT Path:");
+                foreach (var p in devicePaths)
+                {
+                    Console.Error.WriteLine(p);
+                }
+            }
 
             int length = 0x10000;
             IntPtr ptr = Marshal.AllocHGlobal(length);
@@ -122,13 +128,23 @@ namespace FileUnlocker
                     if (GetFileType(localHandle) == FILE_TYPE_DISK)
                     {
                         string fileName = GetFileNameWithTimeout(localHandle, 100);
-                        //Console.Error.WriteLine("[SCAN] PID: {0} | Handle: 0x{1:X} | Path: {2}",
-                                //pid, handleInfo.HandleValue.ToInt64(), fileName);
-                        if (!string.IsNullOrEmpty(fileName) && fileName.StartsWith(devicePath, StringComparison.OrdinalIgnoreCase))
+                        //if (!silent)
+                        //{
+                        //    //Console.Error.WriteLine("[SCAN] PID: {0} | Handle: 0x{1:X} | Path: {2}",
+                        //}
+                        //pid, handleInfo.HandleValue.ToInt64(), fileName);
+                        string fileNameLower = fileName == null ? null : fileName.ToLower();
+                        if (!string.IsNullOrEmpty(fileNameLower) && (
+                            devicePathsLower.Contains(fileNameLower) ||
+                            devicePathsLowerWithSlash.Any(p => fileNameLower.StartsWith(p))
+                        ))
                         {
                             var proc = Process.GetProcessById((int)pid);
-                            Console.Error.WriteLine("[MATCH] PID: {0} | Handle: 0x{1:X} | Path: {2}",
-                            pid, handleInfo.HandleValue.ToInt64(), fileName);
+                            if (!silent)
+                            {
+                                Console.Error.WriteLine("[MATCH] PID: {0} | Handle: 0x{1:X} | Path: {2}",
+                                    pid, handleInfo.HandleValue.ToInt64(), fileName);
+                            }
                             if (!procDict.ContainsKey(proc.Id)) {
                                 procDict.Add(proc.Id, proc);
                             }
@@ -198,9 +214,9 @@ namespace FileUnlocker
 
     public static class FileUnlocker
     {
-        public static int Unlock(string path, bool silent, bool console)
+        public static int Unlock(List<string> paths, bool silent, bool console, bool noHandleFullScan, bool noRestartManagerDetect)
         {
-            if (string.IsNullOrWhiteSpace(path))
+            if (paths == null || paths.Count == 0)
             {
                 if (!silent)
                 {
@@ -216,31 +232,45 @@ namespace FileUnlocker
                 return 3;
             }
 
-            while (true)
+            Dictionary<int, Process> procDict = new Dictionary<int, Process>();
+            SortedSet<string> fullPaths = new SortedSet<string>();
+            foreach (var path_ in paths)
             {
-                if (path.EndsWith("\\"))
+                var path = path_;
+                while (true)
                 {
-                    path = path.Substring(0, path.Length - 1);
-                } else
+                    if (path.EndsWith("\\"))
+                    {
+                        path = path.Substring(0, path.Length - 1);
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+                fullPaths.Add(Path.GetFullPath(path));
+
+                if (!noRestartManagerDetect)
                 {
-                    break;
+                    var currFileProcesses = path.Exist() && path.IsDirectoryPath()
+                        ? GetProcessesFromDirectoryPath(path)
+                        : GetProcessesFromFilePath(path);
+
+                    foreach (Process proc in currFileProcesses)
+                    {
+                        procDict.Add(proc.Id, proc);
+                    }
                 }
             }
 
-            var processes = path.Exist() && path.IsDirectoryPath()
-                ? GetProcessesFromDirectoryPath(path)
-                : GetProcessesFromFilePath(path);
-
-            Dictionary<int, Process> procDict = new Dictionary<int, Process>();
-            foreach (Process proc in processes)
+            if (!noHandleFullScan)
             {
-                procDict.Add(proc.Id, proc);
+                EnhancedHandleScanner.Scan(fullPaths, procDict, silent);
             }
-            EnhancedHandleScanner.Scan(Path.GetFullPath(path), procDict);
 
-            processes = new List<Process>(procDict.Values).ToArray();
+            var processes = new List<Process>(procDict.Values).ToArray();
 
-            if (IsProcessArrayEmpty(processes, path, silent, console))
+            if (IsProcessArrayEmpty(processes, paths.Count == 1 ? paths[0] : null, silent, console))
             {
                 return 2;
             }
@@ -252,12 +282,12 @@ namespace FileUnlocker
             }
             else if (console)
             {
-                GenPrintProcessLockHint(path, processes);
+                GenPrintProcessLockHint(paths.Count == 1 ? paths[0] : null, processes);
                 return 0;
             }
             else
             {
-                return ShowDialog(path, processes);
+                return ShowDialog(paths.Count == 1 ? paths[0] : null, processes);
             }
         }
 
@@ -282,7 +312,7 @@ namespace FileUnlocker
                     }
 
 
-                } catch (Exception e)
+                } catch
                 {
                     continue;
                 }
@@ -306,9 +336,9 @@ namespace FileUnlocker
             return new List<Process>(processesById.Values).ToArray();
         }
 
-        private static int ShowDialog(string path, Process[] processes)
+        private static int ShowDialog(string pathNullable, Process[] processes)
         {
-            string hint = GenProcessLockHint(path, true, processes);
+            string hint = GenProcessLockHint(pathNullable, true, processes).Item1;
 
             var ret = 0;
             Message.ShowYesNoDialog(hint, "Unlock", (processes1) => { KillProcesses(processes1); ret = 0; }, (processes1) => { ret = 4; }, processes);
@@ -316,17 +346,19 @@ namespace FileUnlocker
             return ret;
         }
 
-        private static void GenPrintProcessLockHint(string path, Process[] processes)
+        private static void GenPrintProcessLockHint(string pathNullable, Process[] processes)
         {
-            string hint = GenProcessLockHint(path, false, processes);
+            Tuple<string, string> hint = GenProcessLockHint(pathNullable, false, processes);
 
-            Console.Error.WriteLine(hint);
+            Console.Error.WriteLine(hint.Item1);
+            Console.Out.WriteLine(hint.Item2);
         }
 
-        private static string GenProcessLockHint(string path, bool ask, Process[] processes)
+        private static Tuple<string, string> GenProcessLockHint(string pathNullable, bool ask, Process[] processes)
         {
             var sb = new StringBuilder();
-            sb.AppendLine($"{Path.GetFileName(path)} is locked by:");
+            sb.AppendLine($"{(pathNullable == null ? "These files" : pathNullable)} is locked by:\n");
+            List<string> processIdStrList = new List<string>();
 
             foreach (Process process in processes)
             {
@@ -334,20 +366,22 @@ namespace FileUnlocker
                 try
                 {
                     procName = process.ProcessName;
-                } catch (Exception e) { }
+                }
+                catch { }
                 sb.AppendLine($"{procName} ({process.Id})");
+                processIdStrList.Add(process.Id.ToString());
             }
 
             if (ask)
             {
-                sb.AppendLine($"Kill {(processes.Length > 1 ? "processes" : "process")}?");
+                sb.AppendLine($"\nKill {(processes.Length > 1 ? "processes" : "process")}?");
             } else
             {
                 sb.Append("\n");
             }
 
             var hint = sb.ToString();
-            return hint;
+            return Tuple.Create(hint, string.Join(" ", processIdStrList));
         }
 
         // https://stackoverflow.com/questions/5901679/kill-process-tree-programmatically-in-c-sharp
@@ -403,13 +437,13 @@ namespace FileUnlocker
             }
         }
 
-        private static bool IsProcessArrayEmpty(Process[] processes, string path, bool silent, bool console)
+        private static bool IsProcessArrayEmpty(Process[] processes, string pathNullable, bool silent, bool console)
         {
             if (processes == null || processes.Length == 0)
             {
                 if (!silent)
                 {
-                    var hint = $"{Path.GetFileName(path)} is not currently locked by any process.";
+                    var hint = $"{(pathNullable == null ? "These files" : pathNullable)} is not currently locked by any process.";
                     if (console)
                     {
                         Console.Error.WriteLine(hint, "Unlock");
