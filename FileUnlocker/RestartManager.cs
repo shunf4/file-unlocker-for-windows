@@ -1,8 +1,9 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
+using System.Threading;
 
 namespace FileUnlocker
 {
@@ -125,6 +126,40 @@ namespace FileUnlocker
 			}
 
 			return processes;
+		}
+
+		/// <summary>
+		/// Calls GetProcesses with a timeout to avoid blocking forever.
+		/// </summary>
+		public static List<Process> GetProcessesWithTimeout(string path, int timeoutMs)
+		{
+			List<Process> result = null;
+			Exception error = null;
+
+			Thread t = new Thread(() =>
+			{
+				try
+				{
+					result = GetProcesses(path);
+				}
+				catch (Exception ex)
+				{
+					error = ex;
+				}
+			});
+			t.IsBackground = true;
+			t.Start();
+
+			if (!t.Join(timeoutMs))
+			{
+				try { t.Abort(); } catch { }
+				return new List<Process>();
+			}
+
+			if (error != null)
+				return new List<Process>();
+
+			return result ?? new List<Process>();
 		}
 	}
 }

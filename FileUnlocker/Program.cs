@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -16,7 +16,17 @@ namespace FileUnlocker
             System.Windows.Forms.Application.EnableVisualStyles();
             System.Windows.Forms.Application.SetCompatibleTextRenderingDefault(false);
 
-            string helpText = "FileUnlocker.exe [-silent] [-console] [-noadmin] [-nohandlefullscan] [-norestartmanagerdetect] path1 [path2 [path3 [...]]]\n\nFileUnlocker.exe [-s] [-c] [-na] [-nh] [-nr] path1 [path2 [path3 [...]]]\n";
+            string helpText = "FileUnlocker.exe [options] path1 [path2 [path3 [...]]]\n\n"
+                + "Options:\n"
+                + "  -silent   [-s]   Silent kill mode\n"
+                + "  -console  [-c]   Console output mode\n"
+                + "  -noadmin  [-na]  Skip admin relaunch\n"
+                + "  -nohandlefullscan       [-nh]  Disable handle scanner\n"
+                + "  -norestartmanagerdetect [-nr]  Disable Restart Manager\n"
+                + "  -rmtimeout  <ms>  Per-file Restart Manager query timeout (default: 5000)\n"
+                + "  -dirmtimeout <ms> Directory RM scan overall timeout (default: 20000)\n"
+                + "  -enumtimeout <ms> Directory file enumeration timeout (default: 10000)\n"
+                + "  -scantimeout <ms> Handle scanner overall timeout (default: 30000)\n";
 
             if (args.Length > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "/h" || args[0] == "-?" || args[0] == "/?"))
             {
@@ -35,12 +45,19 @@ namespace FileUnlocker
             bool console = false;
             bool noRestartManagerDetect = false;
             bool noHandleFullScan = false;
-            foreach (string a in args)
+            int rmTimeoutMs = 5000;
+            int dirRmTimeoutMs = 20000;
+            int enumTimeoutMs = 10000;
+            int scanTimeoutMs = 30000;
+
+            for (int i = 0; i < args.Length; i++)
             {
+                string a = args[i];
                 if (a.EqualsAny(StringComparison.OrdinalIgnoreCase, "-noadmin", "-na"))
                 {
                     noAdmin = true;
-                } else if (a.EqualsAny(StringComparison.OrdinalIgnoreCase, "-silent", "-s"))
+                }
+                else if (a.EqualsAny(StringComparison.OrdinalIgnoreCase, "-silent", "-s"))
                 {
                     silent = true;
                 }
@@ -56,19 +73,38 @@ namespace FileUnlocker
                 {
                     noRestartManagerDetect = true;
                 }
+                else if (a.EqualsAny(StringComparison.OrdinalIgnoreCase, "-rmtimeout") && i + 1 < args.Length)
+                {
+                    if (int.TryParse(args[++i], out int v) && v > 0) rmTimeoutMs = v;
+                }
+                else if (a.EqualsAny(StringComparison.OrdinalIgnoreCase, "-dirmtimeout") && i + 1 < args.Length)
+                {
+                    if (int.TryParse(args[++i], out int v) && v > 0) dirRmTimeoutMs = v;
+                }
+                else if (a.EqualsAny(StringComparison.OrdinalIgnoreCase, "-enumtimeout") && i + 1 < args.Length)
+                {
+                    if (int.TryParse(args[++i], out int v) && v > 0) enumTimeoutMs = v;
+                }
+                else if (a.EqualsAny(StringComparison.OrdinalIgnoreCase, "-scantimeout") && i + 1 < args.Length)
+                {
+                    if (int.TryParse(args[++i], out int v) && v > 0) scanTimeoutMs = v;
+                }
                 else
                 {
-                    paths.Add(a);
+                    if (!string.IsNullOrWhiteSpace(a))
+                    {
+                        paths.Add(a);
+                    }
                 }
             }
 
-            
             if (!noAdmin)
             {
                 RelaunchIfNotAdmin(args);
             }
-           
-            return FileUnlocker.Unlock(paths, silent, console, noHandleFullScan, noRestartManagerDetect);
+
+            return FileUnlocker.Unlock(paths, silent, console, noHandleFullScan, noRestartManagerDetect,
+                rmTimeoutMs, dirRmTimeoutMs, enumTimeoutMs, scanTimeoutMs);
         }
 
         public static class CommandLineHelper
@@ -106,13 +142,13 @@ namespace FileUnlocker
 
                     if (i == arg.Length)
                     {
-                        // Rule: If we reach the end, double the backslashes to avoid 
+                        // Rule: If we reach the end, double the backslashes to avoid
                         // escaping the closing quote.
                         sb.Append('\\', backslashCount * 2);
                     }
                     else if (arg[i] == '"')
                     {
-                        // Rule: For internal quotes, double the preceding backslashes 
+                        // Rule: For internal quotes, double the preceding backslashes
                         // and add one more to escape the quote.
                         sb.Append('\\', backslashCount * 2 + 1);
                         sb.Append('"');

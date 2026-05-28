@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -79,7 +80,7 @@ namespace FileUnlocker
         }
         #endregion
 
-        public static void Scan(SortedSet<string> fullPaths, Dictionary<int, Process> procDict, bool silent)
+        public static void Scan(SortedSet<string> fullPaths, Dictionary<int, Process> procDict, bool silent, int overallTimeoutMs)
         {
             List<string> devicePaths = new List<string>(fullPaths.Select(p => GetDevicePath(p)));
             SortedSet<string> devicePathsLower = new SortedSet<string>(devicePaths.Select(p => p.ToLower()));
@@ -94,67 +95,116 @@ namespace FileUnlocker
             }
 
             int length = 0x10000;
-            IntPtr ptr = Marshal.AllocHGlobal(length);
+            IntPtr ptr = IntPtr.Zero;
             int returnLength = 0;
 
-            // 1. Get Extended Handle Information
-            while (NtQuerySystemInformation(SystemExtendedHandleInformation, ptr, length, ref returnLength) == STATUS_INFO_LENGTH_MISMATCH)
+            try
             {
-                length = returnLength;
-                Marshal.FreeHGlobal(ptr);
                 ptr = Marshal.AllocHGlobal(length);
-            }
 
-            // In the EX structure, NumberOfHandles is an IntPtr (8 bytes on x64)
-            long handleCount = Marshal.ReadIntPtr(ptr).ToInt64();
-
-            // Offset starts after the header (NumberOfHandles + Reserved)
-            IntPtr offset = new IntPtr(ptr.ToInt64() + (IntPtr.Size * 2));
-            int structSize = Marshal.SizeOf(typeof(SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX));
-
-            for (long i = 0; i < handleCount; i++)
-            {
-                var handleInfo = (SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX)Marshal.PtrToStructure(offset, typeof(SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX));
-                offset = new IntPtr(offset.ToInt64() + structSize);
-
-                // 2. Open process (casting IntPtr PID to uint)
-                uint pid = (uint)handleInfo.UniqueProcessId.ToInt32();
-                IntPtr processHandle = OpenProcess(0x40, false, pid);
-                if (processHandle == IntPtr.Zero) continue;
-
-                // 3. Duplicate and Query
-                if (DuplicateHandle(processHandle, handleInfo.HandleValue, Process.GetCurrentProcess().Handle, out IntPtr localHandle, 0, false, 2))
+                // 1. Get Extended Handle Information
+                while (NtQuerySystemInformation(SystemExtendedHandleInformation, ptr, length, ref returnLength) == STATUS_INFO_LENGTH_MISMATCH)
                 {
-                    if (GetFileType(localHandle) == FILE_TYPE_DISK)
+                    length = returnLength;
+                    Marshal.FreeHGlobal(ptr);
+                    ptr = IntPtr.Zero;
+                    ptr = Marshal.AllocHGlobal(length);
+                }
+
+                // In the EX structure, NumberOfHandles is an IntPtr (8 bytes on x64)
+                long handleCount = Marshal.ReadIntPtr(ptr).ToInt64();
+
+                if (!silent)
+                {
+                    Console.Error.WriteLine("[SCAN] Total system handles: {0}, timeout: {1}ms", handleCount, overallTimeoutMs);
+                }
+
+                if (handleCount == 0)
+                {
+                    return;
+                }
+
+                // Offset starts after the header (NumberOfHandles + Reserved)
+                IntPtr offset = new IntPtr(ptr.ToInt64() + (IntPtr.Size * 2));
+                int structSize = Marshal.SizeOf(typeof(SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX));
+
+                // Overall timeout
+                Stopwatch sw = Stopwatch.StartNew();
+                long scannedCount = 0;
+                long lastProgressTime = 0;
+
+                for (long i = 0; i < handleCount; i++)
+                {
+                    if (sw.ElapsedMilliseconds > overallTimeoutMs)
                     {
-                        string fileName = GetFileNameWithTimeout(localHandle, 100);
-                        //if (!silent)
-                        //{
-                        //    //Console.Error.WriteLine("[SCAN] PID: {0} | Handle: 0x{1:X} | Path: {2}",
-                        //}
-                        //pid, handleInfo.HandleValue.ToInt64(), fileName);
-                        string fileNameLower = fileName == null ? null : fileName.ToLower();
-                        if (!string.IsNullOrEmpty(fileNameLower) && (
-                            devicePathsLower.Contains(fileNameLower) ||
-                            devicePathsLowerWithSlash.Any(p => fileNameLower.StartsWith(p))
-                        ))
+                        if (!silent)
                         {
-                            var proc = Process.GetProcessById((int)pid);
-                            if (!silent)
+                            Console.Error.WriteLine("[SCAN] Timeout ({0}ms) reached after scanning {1}/{2} handles. Stopping.",
+                                overallTimeoutMs, scannedCount, handleCount);
+                        }
+                        break;
+                    }
+
+                    var handleInfo = (SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX)Marshal.PtrToStructure(offset, typeof(SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX));
+                    offset = new IntPtr(offset.ToInt64() + structSize);
+                    scannedCount++;
+
+                    // Progress: every 5000 handles, or every 3 seconds (whichever triggers first)
+                    if (!silent && (scannedCount % 5000 == 0 || sw.ElapsedMilliseconds - lastProgressTime >= 3000))
+                    {
+                        Console.Error.WriteLine("[SCAN] Progress: {0}/{1} handles ({2:F1}%), elapsed: {3:F1}s",
+                            scannedCount, handleCount, (double)scannedCount / handleCount * 100, sw.Elapsed.TotalSeconds);
+                        lastProgressTime = sw.ElapsedMilliseconds;
+                    }
+
+                    // 2. Open process (casting IntPtr PID to uint)
+                    uint pid = (uint)handleInfo.UniqueProcessId.ToInt32();
+                    IntPtr processHandle = OpenProcess(0x40, false, pid);
+                    if (processHandle == IntPtr.Zero) continue;
+
+                    // 3. Duplicate and Query
+                    if (DuplicateHandle(processHandle, handleInfo.HandleValue, Process.GetCurrentProcess().Handle, out IntPtr localHandle, 0, false, 2))
+                    {
+                        if (GetFileType(localHandle) == FILE_TYPE_DISK)
+                        {
+                            // Adaptive per-handle timeout: reduce as we approach overall timeout
+                            int remaining = (int)(overallTimeoutMs - sw.ElapsedMilliseconds);
+                            if (remaining <= 0) { CloseHandle(localHandle); CloseHandle(processHandle); break; }
+                            int perHandleTimeout = Math.Min(100, remaining);
+
+                            string fileName = GetFileNameWithTimeout(localHandle, perHandleTimeout);
+                            string fileNameLower = fileName == null ? null : fileName.ToLower();
+                            if (!string.IsNullOrEmpty(fileNameLower) && (
+                                devicePathsLower.Contains(fileNameLower) ||
+                                devicePathsLowerWithSlash.Any(p => fileNameLower.StartsWith(p))
+                            ))
                             {
-                                Console.Error.WriteLine("[MATCH] PID: {0} | Handle: 0x{1:X} | Path: {2}",
-                                    pid, handleInfo.HandleValue.ToInt64(), fileName);
-                            }
-                            if (!procDict.ContainsKey(proc.Id)) {
-                                procDict.Add(proc.Id, proc);
+                                var proc = Process.GetProcessById((int)pid);
+                                if (!silent)
+                                {
+                                    Console.Error.WriteLine("[MATCH] PID: {0} | Handle: 0x{1:X} | Path: {2}",
+                                        pid, handleInfo.HandleValue.ToInt64(), fileName);
+                                }
+                                if (!procDict.ContainsKey(proc.Id)) {
+                                    procDict.Add(proc.Id, proc);
+                                }
                             }
                         }
+                        CloseHandle(localHandle);
                     }
-                    CloseHandle(localHandle);
+                    CloseHandle(processHandle);
                 }
-                CloseHandle(processHandle);
+
+                if (!silent)
+                {
+                    Console.Error.WriteLine("[SCAN] Done. Scanned {0}/{1} handles in {2:F1}s, found {3} process(es).",
+                        scannedCount, handleCount, sw.Elapsed.TotalSeconds, procDict.Count);
+                }
             }
-            Marshal.FreeHGlobal(ptr);
+            finally
+            {
+                Marshal.FreeHGlobal(ptr);
+            }
         }
 
         private static string GetFileNameWithTimeout(IntPtr handle, int timeoutMs)
@@ -214,7 +264,8 @@ namespace FileUnlocker
 
     public static class FileUnlocker
     {
-        public static int Unlock(List<string> paths, bool silent, bool console, bool noHandleFullScan, bool noRestartManagerDetect)
+        public static int Unlock(List<string> paths, bool silent, bool console, bool noHandleFullScan, bool noRestartManagerDetect,
+            int rmTimeoutMs, int dirRmTimeoutMs, int enumTimeoutMs, int scanTimeoutMs)
         {
             if (paths == null || paths.Count == 0)
             {
@@ -222,50 +273,94 @@ namespace FileUnlocker
                 {
                     if (console)
                     {
-                        Console.Error.WriteLine("No file or directory path was provided.", "Unlock");
+                        Console.Error.WriteLine("No file or directory path was provided.");
                     } else
                     {
                         Message.Show("No file or directory path was provided.", "Unlock");
                     }
-                        
+
                 }
                 return 3;
             }
 
             Dictionary<int, Process> procDict = new Dictionary<int, Process>();
             SortedSet<string> fullPaths = new SortedSet<string>();
-            foreach (var path_ in paths)
-            {
-                var path = path_;
-                while (true)
-                {
-                    if (path.EndsWith("\\"))
-                    {
-                        path = path.Substring(0, path.Length - 1);
-                    }
-                    else
-                    {
-                        break;
-                    }
-                }
-                fullPaths.Add(Path.GetFullPath(path));
 
-                if (!noRestartManagerDetect)
+            if (!noRestartManagerDetect)
+            {
+                if (!silent)
                 {
+                    Console.Error.WriteLine("[RM] Restart Manager detection enabled. Timeout per file: {0}ms, dir scan: {1}ms, enum: {2}ms",
+                        rmTimeoutMs, dirRmTimeoutMs, enumTimeoutMs);
+                }
+
+                Stopwatch rmSw = Stopwatch.StartNew();
+                int pathIdx = 0;
+                foreach (var path_ in paths)
+                {
+                    pathIdx++;
+                    var path = path_;
+                    while (true)
+                    {
+                        if (path.EndsWith("\\"))
+                        {
+                            path = path.Substring(0, path.Length - 1);
+                        }
+                        else
+                        {
+                            break;
+                        }
+                    }
+                    fullPaths.Add(Path.GetFullPath(path));
+
+                    if (!silent)
+                    {
+                        Console.Error.WriteLine("[RM] Scanning path {0}/{1}: {2}", pathIdx, paths.Count, path);
+                    }
+
                     var currFileProcesses = path.Exist() && path.IsDirectoryPath()
-                        ? GetProcessesFromDirectoryPath(path)
-                        : GetProcessesFromFilePath(path);
+                        ? GetProcessesFromDirectoryPath(path, rmTimeoutMs, dirRmTimeoutMs, enumTimeoutMs, silent)
+                        : GetProcessesFromFilePath(path, rmTimeoutMs);
 
                     foreach (Process proc in currFileProcesses)
                     {
-                        procDict.Add(proc.Id, proc);
+                        if (!procDict.ContainsKey(proc.Id))
+                        {
+                            procDict.Add(proc.Id, proc);
+                        }
                     }
+                }
+
+                if (!silent)
+                {
+                    Console.Error.WriteLine("[RM] Restart Manager detection completed in {0:F1}s, found {1} process(es).",
+                        rmSw.Elapsed.TotalSeconds, procDict.Count);
+                }
+            }
+            else
+            {
+                // Still build fullPaths even when RM is disabled
+                foreach (var path_ in paths)
+                {
+                    var path = path_;
+                    while (true)
+                    {
+                        if (path.EndsWith("\\"))
+                        {
+                            path = path.Substring(0, path.Length - 1);
+                        }
+                        else
+                        {
+                            break;
+                        }
+                    }
+                    fullPaths.Add(Path.GetFullPath(path));
                 }
             }
 
             if (!noHandleFullScan)
             {
-                EnhancedHandleScanner.Scan(fullPaths, procDict, silent);
+                EnhancedHandleScanner.Scan(fullPaths, procDict, silent, scanTimeoutMs);
             }
 
             var processes = new List<Process>(procDict.Values).ToArray();
@@ -291,41 +386,141 @@ namespace FileUnlocker
             }
         }
 
-        private static Process[] GetProcessesFromDirectoryPath(string directoryPath)
+        private static Process[] GetProcessesFromDirectoryPath(string directoryPath, int rmTimeoutMs, int dirRmTimeoutMs, int enumTimeoutMs, bool silent)
         {
-            string[] filePaths = Directory.GetFiles(directoryPath, "*", SearchOption.AllDirectories);
-            List<string> filePaths1 = new List<string>(filePaths);
-            filePaths1.Add(directoryPath);
-
             var processesById = new Dictionary<int, Process>();
 
-            foreach (string path in filePaths1)
+            // First, check the directory itself
+            try
+            {
+                foreach (var process in RestartManager.GetProcessesWithTimeout(directoryPath, rmTimeoutMs))
+                {
+                    if (!processesById.ContainsKey(process.Id))
+                    {
+                        processesById[process.Id] = process;
+                    }
+                }
+            }
+            catch { }
+
+            // Enumerate files lazily with timeout
+            // Use a thread to avoid blocking forever on large/network directories
+            ConcurrentQueue<string> fileQueue = new ConcurrentQueue<string>();
+            bool enumerationDone = false;
+            Exception enumError = null;
+
+            Thread enumThread = new Thread(() =>
             {
                 try
                 {
-                    foreach (var process in RestartManager.GetProcesses(path))
+                    foreach (var file in Directory.EnumerateFiles(directoryPath, "*", SearchOption.AllDirectories))
                     {
-                        if (!processesById.ContainsKey(process.Id))
-                        {
-                            processesById[process.Id] = process;
-                        }
+                        fileQueue.Enqueue(file);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    enumError = ex;
+                }
+                enumerationDone = true;
+            });
+            enumThread.IsBackground = true;
+            enumThread.Start();
+
+            if (!silent)
+            {
+                Console.Error.WriteLine("[RM] Enumerating files in directory (timeout: {0}ms)...", enumTimeoutMs);
+            }
+
+            // Wait for enumeration
+            enumThread.Join(enumTimeoutMs);
+
+            if (enumError != null && fileQueue.Count == 0)
+            {
+                if (!silent)
+                {
+                    Console.Error.WriteLine("[RM] Directory enumeration failed: {0}", enumError.Message);
+                }
+                return new List<Process>(processesById.Values).ToArray();
+            }
+
+            int totalFiles = fileQueue.Count;
+            if (!silent)
+            {
+                if (!enumerationDone)
+                    Console.Error.WriteLine("[RM] Enumeration still running, ~{0} files found so far. Querying Restart Manager (timeout: {1}ms)...",
+                        totalFiles, dirRmTimeoutMs);
+                else
+                    Console.Error.WriteLine("[RM] Found {0} files, querying Restart Manager (timeout: {1}ms)...",
+                        totalFiles, dirRmTimeoutMs);
+            }
+
+            // Process files from the queue with an overall timeout
+            Stopwatch sw = Stopwatch.StartNew();
+            int filesProcessed = 0;
+            long lastProgressTime = 0;
+
+            while (sw.ElapsedMilliseconds < dirRmTimeoutMs)
+            {
+                if (fileQueue.TryDequeue(out string path))
+                {
+                    filesProcessed++;
+                    int remaining = (int)(dirRmTimeoutMs - sw.ElapsedMilliseconds);
+                    if (remaining <= 0) break;
+
+                    // Progress: every 50 files or every 2 seconds
+                    if (!silent && (filesProcessed % 50 == 0 || sw.ElapsedMilliseconds - lastProgressTime >= 2000))
+                    {
+                        Console.Error.WriteLine("[RM] Progress: queried {0}/{1} files, elapsed: {2:F1}s",
+                            filesProcessed, totalFiles, sw.Elapsed.TotalSeconds);
+                        lastProgressTime = sw.ElapsedMilliseconds;
                     }
 
-
-                } catch
-                {
-                    continue;
+                    try
+                    {
+                        foreach (var process in RestartManager.GetProcessesWithTimeout(path, Math.Min(rmTimeoutMs, remaining)))
+                        {
+                            if (!processesById.ContainsKey(process.Id))
+                            {
+                                processesById[process.Id] = process;
+                            }
+                        }
+                    }
+                    catch { }
                 }
+                else if (enumerationDone || !enumThread.IsAlive)
+                {
+                    break;
+                }
+                else
+                {
+                    Thread.Sleep(50);
+                }
+            }
+
+            if (!enumerationDone && enumThread.IsAlive)
+            {
+                if (!silent)
+                {
+                    Console.Error.WriteLine("[RM] Enumeration still running, aborting. Processed {0} files.", filesProcessed);
+                }
+                try { enumThread.Abort(); } catch { }
+            }
+
+            if (!silent)
+            {
+                Console.Error.WriteLine("[RM] Directory scan done. Queried {0} files in {1:F1}s, found {2} process(es).",
+                    filesProcessed, sw.Elapsed.TotalSeconds, processesById.Count);
             }
 
             return new List<Process>(processesById.Values).ToArray();
         }
 
-        private static Process[] GetProcessesFromFilePath(string filePath)
+        private static Process[] GetProcessesFromFilePath(string filePath, int rmTimeoutMs)
         {
             var processesById = new Dictionary<int, Process>();
 
-            foreach (var process in RestartManager.GetProcesses(filePath))
+            foreach (var process in RestartManager.GetProcessesWithTimeout(filePath, rmTimeoutMs))
             {
                 if (!processesById.ContainsKey(process.Id))
                 {
@@ -446,7 +641,7 @@ namespace FileUnlocker
                     var hint = $"{(pathNullable == null ? "These files" : pathNullable)} is not currently locked by any process.";
                     if (console)
                     {
-                        Console.Error.WriteLine(hint, "Unlock");
+                        Console.Error.WriteLine(hint);
                     }
                     else
                     {
